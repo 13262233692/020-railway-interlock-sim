@@ -26,7 +26,8 @@ namespace RailwayInterlock.Components
         [SerializeField] private int _occupancyCount = 0;
 
         private BoxCollider _collider;
-        private readonly HashSet<GameObject> _occupyingObjects = new HashSet<GameObject>();
+        private readonly HashSet<GameObject> _triggerOccupyingObjects = new HashSet<GameObject>();
+        private readonly HashSet<Train> _registeredTrains = new HashSet<Train>();
 
         public string Id => trackId;
 
@@ -71,23 +72,44 @@ namespace RailwayInterlock.Components
                 State = TrackState.Clear;
         }
 
+        public void RegisterTrainOccupancy(Train train)
+        {
+            if (train == null) return;
+            if (_registeredTrains.Add(train))
+            {
+                SetOccupied();
+                Debug.Log($"[TrackCircuit] {trackId} 被列车 {train.trainId} 注册占用（射线检测）");
+            }
+        }
+
+        public void UnregisterTrainOccupancy(Train train)
+        {
+            if (train == null) return;
+            if (_registeredTrains.Remove(train))
+            {
+                SetClear();
+                Debug.Log($"[TrackCircuit] {trackId} 列车 {train.trainId} 注销离开（射线检测）");
+            }
+        }
+
         private void OnTriggerEnter(Collider other)
         {
             var train = other.GetComponent<Train>();
-            if (train != null && _occupyingObjects.Add(other.gameObject))
+            if (train != null && _triggerOccupyingObjects.Add(other.gameObject))
             {
-                SetOccupied();
-                Debug.Log($"[TrackCircuit] {trackId} 被列车 {train.trainId} 占用");
+                if (!_registeredTrains.Contains(train))
+                {
+                    RegisterTrainOccupancy(train);
+                }
             }
         }
 
         private void OnTriggerExit(Collider other)
         {
             var train = other.GetComponent<Train>();
-            if (train != null && _occupyingObjects.Remove(other.gameObject))
+            if (train != null && _triggerOccupyingObjects.Remove(other.gameObject))
             {
-                SetClear();
-                Debug.Log($"[TrackCircuit] {trackId} 列车 {train.trainId} 离开");
+                UnregisterTrainOccupancy(train);
             }
         }
 
@@ -114,8 +136,14 @@ namespace RailwayInterlock.Components
         public void ResetOccupancy()
         {
             _occupancyCount = 0;
-            _occupyingObjects.Clear();
+            _triggerOccupyingObjects.Clear();
+            _registeredTrains.Clear();
             State = TrackState.Clear;
+        }
+
+        public bool IsTrainRegistered(Train train)
+        {
+            return _registeredTrains.Contains(train);
         }
 
         private void OnDrawGizmosSelected()

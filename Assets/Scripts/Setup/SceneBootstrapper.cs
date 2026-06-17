@@ -153,8 +153,8 @@ namespace RailwayInterlock.Setup
 
             GameObject managerObj = new GameObject("GameManager");
             GameManager gm = managerObj.AddComponent<GameManager>();
-            gm.interlockEvaluationInterval = 0.05f;
             gm.autoEvaluateInterlock = true;
+            gm.evaluateEveryFixedStep = true;
             gm.enableDebugLogging = true;
 
             return managerObj;

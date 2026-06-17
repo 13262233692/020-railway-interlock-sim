@@ -236,7 +236,7 @@ namespace RailwayInterlock.UI
 
                 Color posColor = sw.Position == SwitchPosition.Normal ? Color.green : Color.yellow;
                 GUIStyle s = new GUIStyle(_statusLabelStyle) { normal = { textColor = posColor } };
-                string posStr = sw.IsMoving ? $"移动中({sw.Position}→{sw._targetPosition})" : sw.Position.ToString();
+                string posStr = sw.IsMoving ? $"移动中({sw.Position}→{sw.TargetPosition})" : sw.Position.ToString();
                 GUILayout.Label(posStr, s, GUILayout.Width(120));
 
                 using (new EditorGUIDisabledScope(sw.IsMoving || sw.IsOccupied()))

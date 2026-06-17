@@ -351,6 +351,18 @@ namespace RailwayInterlock.Scenarios
             TrainSpawnPoint spawn = go.AddComponent<TrainSpawnPoint>();
             spawn.spawnPointId = $"SPAWN_{id}";
 
+            Rigidbody rb = go.AddComponent<Rigidbody>();
+            rb.mass = 30000f;
+            rb.drag = 0.05f;
+            rb.angularDrag = 1f;
+            rb.constraints = RigidbodyConstraints.FreezeRotation;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+            BoxCollider bodyCol = go.AddComponent<BoxCollider>();
+            bodyCol.center = new Vector3(0, 1.5f, 0);
+            bodyCol.size = new Vector3(2.2f, 3f, 14f);
+
             Train train = go.AddComponent<Train>();
             train.trainId = id;
             train.displayName = name;
@@ -359,30 +371,31 @@ namespace RailwayInterlock.Scenarios
             train.acceleration = 1.5f;
             train.brakeDeceleration = 4f;
             train.emergencyBrakeDeceleration = 8f;
-            train.signalDetectionRange = 35f;
+            train.signalDetectionRange = 60f;
+            train.maxDisplacementPerFrame = 8f;
+            train.safetyBrakeDistanceFactor = 1.5f;
+            train.enableSpeedClamping = true;
 
-            Rigidbody rb = go.AddComponent<Rigidbody>();
-            rb.mass = 30000f;
-            rb.drag = 0.05f;
-            rb.angularDrag = 1f;
-            rb.constraints = RigidbodyConstraints.FreezeRotation;
-            rb.interpolation = RigidbodyInterpolation.Interpolate;
-
-            BoxCollider bodyCol = go.AddComponent<BoxCollider>();
-            bodyCol.center = new Vector3(0, 1.5f, 0);
-            bodyCol.size = new Vector3(2.2f, 3f, 14f);
+            TrackScanner scanner = go.GetComponent<TrackScanner>();
+            if (scanner == null)
+                scanner = go.AddComponent<TrackScanner>();
+            scanner.signalScanRange = 60f;
+            scanner.trackOverlapHalfExtent = 1.5f;
+            scanner.trackOverlapHeight = 3f;
+            scanner.raycastSubdivisions = 5;
+            scanner.safetyMarginDistance = 2f;
 
             GameObject detectionPoint = new GameObject("SignalDetectionPoint");
             detectionPoint.transform.SetParent(go.transform);
             detectionPoint.transform.localPosition = new Vector3(0, 2.5f, 7.5f);
             train.signalDetectionPoint = detectionPoint.transform;
 
-            CreateTrainBody(go.transform);
+            CreateTrainBody(go.transform, train);
 
             return train;
         }
 
-        private void CreateTrainBody(Transform parent)
+        private void CreateTrainBody(Transform parent, Train train)
         {
             GameObject body = GameObject.CreatePrimitive(PrimitiveType.Cube);
             body.name = "Body";

@@ -9,6 +9,7 @@ namespace RailwayInterlock.Components
 {
     [RequireComponent(typeof(Rigidbody))]
     [RequireComponent(typeof(Collider))]
+    [RequireComponent(typeof(TrackScanner))]
     public class Train : MonoBehaviour, ITrain
     {
         [Header("Configuration")]
@@ -23,9 +24,15 @@ namespace RailwayInterlock.Components
 
         [Header("Signal Detection")]
         public Transform signalDetectionPoint;
-        public float signalDetectionRange = 30f;
+        public float signalDetectionRange = 60f;
         public LayerMask signalLayer = ~0;
         public float stopDistanceFromSignal = 5f;
+
+        [Header("High-Speed Protection")]
+        public float maxDisplacementPerFrame = 8f;
+        public float safetyBrakeDistanceFactor = 1.5f;
+        public float minTrackBoundaryRespect = 3f;
+        public bool enableSpeedClamping = true;
 
         [Header("References")]
         public List<Transform> bogies = new List<Transform>();
@@ -42,7 +49,10 @@ namespace RailwayInterlock.Components
         [SerializeField] private string _currentTrackId;
 
         private Rigidbody _rb;
+        private TrackScanner _scanner;
         private bool _automaticMode = true;
+        private bool _forceEmergencyBrakePending;
+        private Vector3 _positionBeforePhysicsStep;
 
         public string Id => trainId;
         public TrainState State => _state;
@@ -51,6 +61,7 @@ namespace RailwayInterlock.Components
         public bool IsAutomaticMode => _automaticMode;
         public Signal CurrentSignalAhead => _currentSignalAhead;
         public string CurrentTrackId => _currentTrackId;
+        public TrackScanner Scanner => _scanner;
 
         public event Action<string, TrainState> OnStateChanged;
         public event Action<string, float> OnSpeedChanged;
@@ -63,89 +74,133 @@ namespace RailwayInterlock.Components
             _rb.useGravity = true;
             _rb.constraints = RigidbodyConstraints.FreezeRotation;
             _rb.interpolation = RigidbodyInterpolation.Interpolate;
+            _rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+            _scanner = GetComponent<TrackScanner>();
+            if (_scanner == null)
+                _scanner = gameObject.AddComponent<TrackScanner>();
         }
 
-        private void Update()
+        private void Start()
         {
-            DetectSignalsAhead();
+            _positionBeforePhysicsStep = transform.position;
 
-            if (_automaticMode)
+            if (_scanner != null)
             {
-                HandleAutomaticDriving();
+                _scanner.OnTrackEntered += HandleTrackEntered;
+                _scanner.OnTrackLeft += HandleTrackLeft;
+                _scanner.OnRedSignalCrossed += HandleRedSignalCrossed;
             }
-
-            UpdateState();
         }
 
         private void FixedUpdate()
         {
+            _positionBeforePhysicsStep = transform.position;
+
+            if (_forceEmergencyBrakePending)
+            {
+                _forceEmergencyBrakePending = false;
+                ForceEmergencyBrakeImmediate();
+            }
+
+            EvaluateDrivingLogic();
+
+            ClampSpeedForSafeDisplacement();
+
             HandlePhysicsMovement();
         }
 
-        private void DetectSignalsAhead()
+        private void Update()
         {
-            Vector3 detectionOrigin = signalDetectionPoint != null ? signalDetectionPoint.position : transform.position + Vector3.up * 2f;
-            Vector3 detectionDir = travelDirection == Direction.Up ? transform.forward : -transform.forward;
-
-            _currentSignalAhead = null;
-            RaycastHit[] hits = Physics.RaycastAll(detectionOrigin, detectionDir, signalDetectionRange, signalLayer);
-
-            float closestDistance = float.MaxValue;
-            foreach (var hit in hits)
-            {
-                var signal = hit.collider.GetComponentInParent<Signal>();
-                if (signal != null)
-                {
-                    if (signal.direction != travelDirection)
-                        continue;
-
-                    float dist = Vector3.Distance(detectionOrigin, hit.point);
-                    if (dist < closestDistance)
-                    {
-                        closestDistance = dist;
-                        _currentSignalAhead = signal;
-                    }
-                }
-            }
+            UpdateCurrentTrackFromScanner();
+            UpdateState();
+            UpdateBrakeEffects();
         }
 
-        private void HandleAutomaticDriving()
+        private void EvaluateDrivingLogic()
         {
-            if (_currentSignalAhead != null)
+            if (!_automaticMode) return;
+
+            if (_scanner == null) return;
+
+            bool needBrake = false;
+            bool needEmergency = false;
+
+            float distanceToStopPoint;
+            if (_scanner.IsApproachingRedSignal(out distanceToStopPoint))
             {
-                float distanceToSignal = Vector3.Distance(
-                    signalDetectionPoint != null ? signalDetectionPoint.position : transform.position,
-                    _currentSignalAhead.transform.position);
+                float effectiveDistance = distanceToStopPoint - stopDistanceFromSignal;
+                float requiredStopDist = CalculateRequiredStopDistance() * safetyBrakeDistanceFactor;
 
-                if (_currentSignalAhead.ShouldStopTrain())
+                if (effectiveDistance <= requiredStopDist)
                 {
-                    float requiredStopDistance = CalculateRequiredStopDistance();
-
-                    if (distanceToSignal <= requiredStopDistance + stopDistanceFromSignal)
-                    {
-                        ApplyBrake();
-                    }
-
-                    if (distanceToSignal <= stopDistanceFromSignal && _currentSpeedMs > 0.5f)
-                    {
-                        TriggerEmergencyBrake();
-                    }
+                    needBrake = true;
                 }
-                else
+
+                if (effectiveDistance <= stopDistanceFromSignal && _currentSpeedMs > 0.5f)
                 {
-                    ReleaseBrake();
+                    needEmergency = true;
                 }
+
+                float nextFrameMaxDisp = _scanner.CalculateMaxDisplacement();
+                if (effectiveDistance <= nextFrameMaxDisp + safetyBrakeDistanceFactor)
+                {
+                    needEmergency = true;
+                }
+            }
+
+            float brakingDistanceForTrain = CalculateRequiredStopDistance() * safetyBrakeDistanceFactor;
+            if (_scanner.IsTrainAheadInBrakingDistance(brakingDistanceForTrain))
+            {
+                needBrake = true;
+
+                float trainAheadDist = _scanner.DistanceToClosestTrain;
+                float minSafeGap = trainLength + stopDistanceFromSignal;
+                if (trainAheadDist <= minSafeGap)
+                {
+                    needEmergency = true;
+                }
+            }
+
+            if (_scanner.ClosestYellowSignal != null)
+            {
+                float yellowDist = _scanner.DistanceToClosestYellowSignal;
+                float targetSpeedMs = maxSpeedKmh / 3.6f * 0.5f;
+                if (_currentSpeedMs > targetSpeedMs && yellowDist < CalculateRequiredStopDistance() * 1.5f)
+                {
+                    needBrake = true;
+                }
+            }
+
+            if (needEmergency)
+            {
+                if (!_isEmergencyBrake)
+                    TriggerEmergencyBrake();
+            }
+            else if (needBrake)
+            {
+                ApplyBrake();
             }
             else
             {
                 ReleaseBrake();
             }
+
+            _currentSignalAhead = _scanner.ClosestSignal;
         }
 
-        private float CalculateRequiredStopDistance()
+        private void ClampSpeedForSafeDisplacement()
         {
-            float decel = _isEmergencyBrake ? emergencyBrakeDeceleration : brakeDeceleration;
-            return (_currentSpeedMs * _currentSpeedMs) / (2f * decel);
+            if (!enableSpeedClamping || _currentSpeedMs <= 0.01f) return;
+
+            float scaledFixedDt = Time.fixedDeltaTime * Mathf.Max(Time.timeScale, 1f);
+            float maxSafeSpeed = maxDisplacementPerFrame / scaledFixedDt;
+
+            if (_currentSpeedMs > maxSafeSpeed)
+            {
+                _currentSpeedMs = maxSafeSpeed;
+                Debug.Log($"[Train] {trainId} 速度被钳制为 {SpeedKmh:F1} km/h（防止帧位移越界）");
+            }
         }
 
         private void HandlePhysicsMovement()
@@ -162,7 +217,6 @@ namespace RailwayInterlock.Components
                 {
                     _currentSpeedMs = 0f;
                     _rb.velocity = Vector3.zero;
-                    PlayBrakeEffects(false);
                     return;
                 }
             }
@@ -177,6 +231,63 @@ namespace RailwayInterlock.Components
             Vector3 newVelocity = moveDir * _currentSpeedMs;
             newVelocity.y = _rb.velocity.y;
             _rb.velocity = Vector3.Lerp(_rb.velocity, newVelocity, 0.5f);
+
+            ValidatePositionAfterPhysics();
+        }
+
+        private void ValidatePositionAfterPhysics()
+        {
+            if (_scanner == null || _currentSpeedMs < 0.1f) return;
+
+            float displacement = Vector3.Distance(_positionBeforePhysicsStep, transform.position);
+
+            if (displacement > maxDisplacementPerFrame)
+            {
+                Vector3 moveDir = (transform.position - _positionBeforePhysicsStep).normalized;
+                Vector3 clampedPos = _positionBeforePhysicsStep + moveDir * maxDisplacementPerFrame;
+                clampedPos.y = transform.position.y;
+                _rb.position = clampedPos;
+                _rb.velocity = moveDir * _currentSpeedMs;
+
+                Debug.LogWarning($"[Train] {trainId} 帧位移 {displacement:F2}m 超过安全阈值 {maxDisplacementPerFrame}m，已钳制位置");
+            }
+
+            if (_scanner.ClosestRedSignal != null && _currentSpeedMs > 0.1f)
+            {
+                float distToRed = _scanner.DistanceToClosestRedSignal;
+                if (distToRed < stopDistanceFromSignal * 0.5f)
+                {
+                    float overshoot = stopDistanceFromSignal * 0.5f - distToRed;
+                    Vector3 pullbackDir = travelDirection == Direction.Up ? -transform.forward : transform.forward;
+                    _rb.position += pullbackDir * overshoot;
+                    _currentSpeedMs = 0f;
+                    _rb.velocity = Vector3.zero;
+                    ApplyBrake();
+
+                    Debug.LogWarning($"[Train] {trainId} 越过红灯信号机，已拉回 {overshoot:F2}m");
+                }
+            }
+        }
+
+        private void UpdateCurrentTrackFromScanner()
+        {
+            if (_scanner != null && _scanner.CurrentTracks != null)
+            {
+                foreach (var tc in _scanner.CurrentTracks)
+                {
+                    if (tc != null)
+                    {
+                        _currentTrackId = tc.trackId;
+                        break;
+                    }
+                }
+            }
+        }
+
+        private float CalculateRequiredStopDistance()
+        {
+            float decel = _isEmergencyBrake ? emergencyBrakeDeceleration : brakeDeceleration;
+            return (_currentSpeedMs * _currentSpeedMs) / (2f * Mathf.Max(decel, 0.1f));
         }
 
         private void UpdateState()
@@ -193,7 +304,32 @@ namespace RailwayInterlock.Components
             {
                 _state = newState;
                 OnStateChanged?.Invoke(trainId, _state);
-                Debug.Log($"[Train] {trainId} 状态: {_state}, 速度: {SpeedKmh:F1} km/h");
+            }
+        }
+
+        private void UpdateBrakeEffects()
+        {
+            PlayBrakeEffects(_isBrakeApplied && _currentSpeedMs > 1f);
+        }
+
+        private void HandleTrackEntered(Train train, TrackCircuit track)
+        {
+            if (train == this && track != null)
+            {
+                _currentTrackId = track.trackId;
+            }
+        }
+
+        private void HandleTrackLeft(Train train, TrackCircuit track)
+        {
+        }
+
+        private void HandleRedSignalCrossed(Train train, Signal signal)
+        {
+            if (train == this)
+            {
+                _forceEmergencyBrakePending = true;
+                Debug.LogError($"[Train] {trainId} 穿越红灯信号机 {signal.signalId}！触发保护性紧急制动！");
             }
         }
 
@@ -203,7 +339,6 @@ namespace RailwayInterlock.Components
             {
                 _isBrakeApplied = true;
                 _isEmergencyBrake = false;
-                PlayBrakeEffects(true);
             }
         }
 
@@ -213,7 +348,6 @@ namespace RailwayInterlock.Components
             {
                 _isBrakeApplied = false;
                 _isEmergencyBrake = false;
-                PlayBrakeEffects(false);
             }
         }
 
@@ -223,18 +357,33 @@ namespace RailwayInterlock.Components
             {
                 _isBrakeApplied = true;
                 _isEmergencyBrake = true;
-                PlayBrakeEffects(true);
                 PlayHorn();
                 OnEmergencyBrakeTriggered?.Invoke(trainId);
                 Debug.LogWarning($"[Train] {trainId} 触发紧急制动！");
             }
         }
 
+        public void ForceEmergencyBrake()
+        {
+            _forceEmergencyBrakePending = true;
+        }
+
+        private void ForceEmergencyBrakeImmediate()
+        {
+            _isBrakeApplied = true;
+            _isEmergencyBrake = true;
+            _currentSpeedMs = 0f;
+            _rb.velocity = Vector3.zero;
+            PlayHorn();
+            OnEmergencyBrakeTriggered?.Invoke(trainId);
+            Debug.LogError($"[Train] {trainId} 强制紧急制动！（穿越红灯保护）");
+        }
+
         private void PlayBrakeEffects(bool active)
         {
             if (brakeSmoke != null)
             {
-                if (active && _currentSpeedMs > 1f)
+                if (active)
                     brakeSmoke.Play();
                 else
                     brakeSmoke.Stop();
@@ -242,7 +391,7 @@ namespace RailwayInterlock.Components
 
             if (brakeSound != null)
             {
-                if (active && _currentSpeedMs > 1f)
+                if (active)
                 {
                     if (!brakeSound.isPlaying)
                         brakeSound.Play();
@@ -319,15 +468,23 @@ namespace RailwayInterlock.Components
             _currentSpeedMs = 0f;
             _isBrakeApplied = false;
             _isEmergencyBrake = false;
+            _forceEmergencyBrakePending = false;
             _state = TrainState.Stopped;
+
+            if (_scanner != null)
+            {
+                _scanner.ClearAllTrackOccupancy();
+            }
         }
 
-        private void OnTriggerEnter(Collider other)
+        private void OnDestroy()
         {
-            var track = other.GetComponent<TrackCircuit>();
-            if (track != null)
+            if (_scanner != null)
             {
-                SetCurrentTrack(track.trackId);
+                _scanner.OnTrackEntered -= HandleTrackEntered;
+                _scanner.OnTrackLeft -= HandleTrackLeft;
+                _scanner.OnRedSignalCrossed -= HandleRedSignalCrossed;
+                _scanner.ClearAllTrackOccupancy();
             }
         }
 
@@ -343,11 +500,14 @@ namespace RailwayInterlock.Components
             {
                 Gizmos.color = _currentSignalAhead.ShouldStopTrain() ? Color.red : Color.green;
                 Gizmos.DrawLine(origin, _currentSignalAhead.transform.position);
-
-                float stopDist = CalculateRequiredStopDistance() + stopDistanceFromSignal;
-                Gizmos.color = new Color(1f, 0.5f, 0f, 0.3f);
-                Gizmos.DrawSphere(origin + dir * stopDist, 1f);
             }
+
+            Gizmos.color = new Color(1f, 0.5f, 0f, 0.2f);
+            float stopDist = CalculateRequiredStopDistance() + stopDistanceFromSignal;
+            Gizmos.DrawSphere(origin + dir * stopDist, 1f);
+
+            Gizmos.color = new Color(1f, 0f, 0f, 0.3f);
+            Gizmos.DrawSphere(origin + dir * stopDistanceFromSignal, 0.8f);
         }
     }
 }

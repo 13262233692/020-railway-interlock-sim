@@ -15,6 +15,7 @@ namespace RailwayInterlock.Interlocking
         private readonly Dictionary<string, RouteData> _routeDatas;
         private readonly Dictionary<string, RouteState> _routeStates;
         private readonly BooleanLogicEvaluator _logicEvaluator;
+        private bool _isEvaluating;
 
         public event Action<string, RouteState> OnRouteStateChanged;
         public event Action<string, SignalAspect> OnSignalAspectChanged;
@@ -193,7 +194,6 @@ namespace RailwayInterlock.Interlocking
                     {
                         _routeStates[routeId] = RouteState.NotSet;
                         OnRouteStateChanged?.Invoke(routeId, RouteState.NotSet);
-                        EvaluateAllSignals();
                     }
                 }
             }
@@ -201,23 +201,33 @@ namespace RailwayInterlock.Interlocking
 
         public void EvaluateAllSignals()
         {
-            UpdateRouteOccupancy();
+            if (_isEvaluating) return;
+            _isEvaluating = true;
 
-            foreach (var kvp in _signalDatas)
+            try
             {
-                string signalId = kvp.Key;
-                var signalData = kvp.Value;
-                var aspect = CalculateSignalAspect(signalId);
+                UpdateRouteOccupancy();
 
-                if (_signals.TryGetValue(signalId, out var signal))
+                foreach (var kvp in _signalDatas)
                 {
-                    var oldAspect = signal.Aspect;
-                    signal.SetAspect(aspect);
-                    if (oldAspect != aspect)
+                    string signalId = kvp.Key;
+                    var signalData = kvp.Value;
+                    var aspect = CalculateSignalAspect(signalId);
+
+                    if (_signals.TryGetValue(signalId, out var signal))
                     {
-                        OnSignalAspectChanged?.Invoke(signalId, aspect);
+                        var oldAspect = signal.Aspect;
+                        signal.SetAspect(aspect);
+                        if (oldAspect != aspect)
+                        {
+                            OnSignalAspectChanged?.Invoke(signalId, aspect);
+                        }
                     }
                 }
+            }
+            finally
+            {
+                _isEvaluating = false;
             }
         }
 

@@ -9,6 +9,7 @@ using RailwayInterlock.Interlocking;
 
 namespace RailwayInterlock.Management
 {
+    [DefaultExecutionOrder(-100)]
     public class GameManager : MonoBehaviour
     {
         public static GameManager Instance { get; private set; }
@@ -21,9 +22,9 @@ namespace RailwayInterlock.Management
         public List<RouteData> routeDefinitions = new List<RouteData>();
 
         [Header("Settings")]
-        public float interlockEvaluationInterval = 0.1f;
         public bool autoEvaluateInterlock = true;
         public bool enableDebugLogging = true;
+        public bool evaluateEveryFixedStep = true;
 
         [Header("Runtime State")]
         [SerializeField] private bool _isSimulationRunning = true;
@@ -42,8 +43,6 @@ namespace RailwayInterlock.Management
         public event Action OnSimulationStarted;
         public event Action OnSimulationPaused;
         public event Action OnSimulationReset;
-
-        private float _evalTimer;
 
         private void Awake()
         {
@@ -132,18 +131,13 @@ namespace RailwayInterlock.Management
             }
         }
 
-        private void Update()
+        private void FixedUpdate()
         {
             if (!_isSimulationRunning) return;
 
-            if (autoEvaluateInterlock)
+            if (autoEvaluateInterlock && evaluateEveryFixedStep)
             {
-                _evalTimer += Time.deltaTime;
-                if (_evalTimer >= interlockEvaluationInterval)
-                {
-                    _evalTimer = 0f;
-                    _interlockController.EvaluateAllSignals();
-                }
+                _interlockController.EvaluateAllSignals();
             }
         }
 

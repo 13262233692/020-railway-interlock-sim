@@ -31,6 +31,7 @@ namespace RailwayInterlock.Components
         [Header("Debug")]
         [SerializeField] private SwitchPosition _position = SwitchPosition.Normal;
         [SerializeField] private SwitchPosition _targetPosition = SwitchPosition.Normal;
+        public SwitchPosition TargetPosition => _targetPosition;
         [SerializeField] private bool _isMoving = false;
         [SerializeField] private float _moveProgress = 1f;
 

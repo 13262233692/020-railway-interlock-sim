@@ -183,6 +183,23 @@ namespace RailwayInterlock.Scenarios
             GameObject go = Instantiate(trainPrefab, position, Quaternion.Euler(rotation), transform);
             go.name = $"Train_{id}";
 
+            Rigidbody rb = go.GetComponent<Rigidbody>();
+            if (rb == null)
+                rb = go.AddComponent<Rigidbody>();
+            rb.mass = 50000f;
+            rb.drag = 0.1f;
+            rb.angularDrag = 1f;
+            rb.constraints = RigidbodyConstraints.FreezeRotation;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+            BoxCollider col = go.GetComponent<BoxCollider>();
+            if (col == null)
+                col = go.AddComponent<BoxCollider>();
+            col.center = new Vector3(0, 1.5f, 0);
+            col.size = new Vector3(2.5f, 3f, 15f);
+            col.isTrigger = false;
+
             Train train = go.GetComponent<Train>();
             if (train == null)
                 train = go.AddComponent<Train>();
@@ -191,20 +208,14 @@ namespace RailwayInterlock.Scenarios
             train.displayName = name;
             train.travelDirection = direction;
             train.maxSpeedKmh = maxSpeedKmh;
+            train.maxDisplacementPerFrame = 8f;
+            train.safetyBrakeDistanceFactor = 1.5f;
+            train.enableSpeedClamping = true;
 
-            Rigidbody rb = go.GetComponent<Rigidbody>();
-            if (rb == null)
-                rb = go.AddComponent<Rigidbody>();
-            rb.mass = 50000f;
-            rb.drag = 0.1f;
-            rb.angularDrag = 1f;
-
-            BoxCollider col = go.GetComponent<BoxCollider>();
-            if (col == null)
-                col = go.AddComponent<BoxCollider>();
-            col.center = new Vector3(0, 1.5f, 0);
-            col.size = new Vector3(2.5f, 3f, 15f);
-            col.isTrigger = false;
+            TrackScanner scanner = go.GetComponent<TrackScanner>();
+            if (scanner == null)
+                scanner = go.AddComponent<TrackScanner>();
+            scanner.signalScanRange = 60f;
 
             CreateTrainVisual(go.transform);
 
