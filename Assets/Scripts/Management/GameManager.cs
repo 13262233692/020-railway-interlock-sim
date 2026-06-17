@@ -6,6 +6,7 @@ using RailwayInterlock.Data;
 using RailwayInterlock.Interfaces;
 using RailwayInterlock.Components;
 using RailwayInterlock.Interlocking;
+using RailwayInterlock.Pathfinding;
 
 namespace RailwayInterlock.Management
 {
@@ -20,6 +21,13 @@ namespace RailwayInterlock.Management
         public List<Signal> signals = new List<Signal>();
         public List<Train> trains = new List<Train>();
         public List<RouteData> routeDefinitions = new List<RouteData>();
+
+        [Header("A* Pathfinding System")]
+        public bool enableAStarDiversion = true;
+        public bool autoCreateScheduler = true;
+        public AStarDiversionScheduler diversionScheduler;
+        public PathVisualizer pathVisualizer;
+        public List<OutOfControlEngineer> rogueEngineers = new List<OutOfControlEngineer>();
 
         [Header("Settings")]
         public bool autoEvaluateInterlock = true;
@@ -39,6 +47,7 @@ namespace RailwayInterlock.Management
 
         public InterlockController Interlock => _interlockController;
         public bool IsSimulationRunning => _isSimulationRunning;
+        public AStarDiversionScheduler Scheduler => diversionScheduler;
 
         public event Action OnSimulationStarted;
         public event Action OnSimulationPaused;
@@ -59,7 +68,45 @@ namespace RailwayInterlock.Management
             InitializeDictionaries();
             InitializeInterlockController();
             RegisterEventListeners();
+            if (enableAStarDiversion && autoCreateScheduler)
+            {
+                InitializeAStarScheduler();
+            }
             StartSimulation();
+        }
+
+        private void InitializeAStarScheduler()
+        {
+            if (diversionScheduler == null)
+            {
+                GameObject schedulerObj = new GameObject("AStarDiversionScheduler");
+                schedulerObj.transform.SetParent(transform);
+                diversionScheduler = schedulerObj.AddComponent<AStarDiversionScheduler>();
+            }
+
+            diversionScheduler.trackCircuits = trackCircuits;
+            diversionScheduler.switchPoints = switchPoints;
+            diversionScheduler.signals = signals;
+            diversionScheduler.normalTrains = trains;
+            diversionScheduler.rogueEngineers = rogueEngineers;
+            diversionScheduler.interlockController = _interlockController;
+
+            diversionScheduler.Initialize();
+
+            if (pathVisualizer == null)
+            {
+                PathVisualizer pv = diversionScheduler.gameObject.GetComponent<PathVisualizer>();
+                if (pv == null) pv = diversionScheduler.gameObject.AddComponent<PathVisualizer>();
+                pathVisualizer = pv;
+            }
+            pathVisualizer.scheduler = diversionScheduler;
+
+            diversionScheduler.OnConflictDetected += HandleConflictDetected;
+            diversionScheduler.OnDiversionPathComputed += HandleDiversionComputed;
+            diversionScheduler.OnDiversionExecuted += HandleDiversionExecuted;
+
+            if (enableDebugLogging)
+                Debug.Log("[GameManager] A* 调度系统初始化完成");
         }
 
         private void InitializeDictionaries()
@@ -288,6 +335,141 @@ namespace RailwayInterlock.Management
 
         private void HandleTrainStateChanged(string trainId, TrainState state)
         {
+        }
+
+        private void HandleConflictDetected(ConflictReport report)
+        {
+            if (enableDebugLogging)
+            {
+                Debug.LogWarning($"[GameManager] 冲突检测 [{report.Type}]: " +
+                                 $"{report.SubjectTrainId} 与 {report.ObstacleTrainId} " +
+                                 $"在 {report.ConflictTrackId ?? "未知区段"}, " +
+                                 $"距离 {report.DistanceToContact:F1}m, " +
+                                 $"预计 {report.EstimatedTimeToContact:F1}s 后接触");
+            }
+        }
+
+        private void HandleDiversionComputed(string trainId, AStarPathResult path)
+        {
+            if (enableDebugLogging)
+            {
+                Debug.Log($"[GameManager] {trainId} 避让路径已计算: " +
+                          $"轨道={path.TrackSequence.Count}段, " +
+                          $"道岔={path.RequiredSwitchPositions.Count}个, " +
+                          $"权重={path.TotalWeight:F2}");
+            }
+        }
+
+        private void HandleDiversionExecuted(string trainId)
+        {
+            if (enableDebugLogging)
+            {
+                Debug.Log($"[GameManager] {trainId} 避让操作已启动");
+            }
+        }
+
+        public OutOfControlEngineer SpawnRogueEngineer(
+            string id, string name, Vector3 position, float yRotation,
+            Direction dir, float speedKmh)
+        {
+            GameObject go = new GameObject($"Engineer_{id}");
+            go.transform.SetParent(transform);
+            go.transform.position = position;
+            go.transform.rotation = Quaternion.Euler(0, yRotation, 0);
+
+            Rigidbody rb = go.AddComponent<Rigidbody>();
+            rb.mass = 8000f;
+            rb.drag = 0.15f;
+            rb.angularDrag = 1.2f;
+            rb.constraints = RigidbodyConstraints.FreezeRotation;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
+            rb.collisionDetectionMode = CollisionDetectionMode.ContinuousDynamic;
+
+            BoxCollider col = go.AddComponent<BoxCollider>();
+            col.center = new Vector3(0, 1.2f, 0);
+            col.size = new Vector3(2f, 2.4f, 8f);
+            col.isTrigger = false;
+
+            OutOfControlEngineer eng = go.AddComponent<OutOfControlEngineer>();
+            eng.engineerId = id;
+            eng.displayName = name;
+            eng.travelDirection = dir;
+            eng.cruiseSpeedKmh = speedKmh;
+
+            CreateEngineerVisual(go.transform);
+
+            rogueEngineers.Add(eng);
+
+            if (diversionScheduler != null)
+            {
+                diversionScheduler.rogueEngineers = rogueEngineers;
+                diversionScheduler.RefreshEvaluatorReferences();
+            }
+
+            return eng;
+        }
+
+        private void CreateEngineerVisual(Transform parent)
+        {
+            GameObject body = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            body.name = "Body";
+            body.transform.SetParent(parent);
+            body.transform.localPosition = new Vector3(0, 1.2f, 0);
+            body.transform.localScale = new Vector3(2f, 2.4f, 8f);
+            Destroy(body.GetComponent<BoxCollider>());
+            Material bodyMat = new Material(Shader.Find("Standard"));
+            bodyMat.color = new Color(0.95f, 0.55f, 0.1f);
+            bodyMat.SetFloat("_Glossiness", 0.4f);
+            body.GetComponent<MeshRenderer>().material = bodyMat;
+
+            GameObject stripe = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            stripe.name = "WarningStripe";
+            stripe.transform.SetParent(parent);
+            stripe.transform.localPosition = new Vector3(0, 1.4f, 0);
+            stripe.transform.localScale = new Vector3(2.05f, 0.2f, 7.8f);
+            Destroy(stripe.GetComponent<BoxCollider>());
+            Material stripeMat = new Material(Shader.Find("Standard"));
+            stripeMat.color = Color.black;
+            stripeMat.SetFloat("_Glossiness", 0.2f);
+            stripe.GetComponent<MeshRenderer>().material = stripeMat;
+
+            GameObject beacon = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            beacon.name = "WarningBeacon";
+            beacon.transform.SetParent(parent);
+            beacon.transform.localPosition = new Vector3(0, 2.8f, 0);
+            beacon.transform.localScale = Vector3.one * 0.4f;
+            Destroy(beacon.GetComponent<SphereCollider>());
+            Material beaconMat = new Material(Shader.Find("Standard"));
+            beaconMat.color = Color.red;
+            beaconMat.EnableKeyword("_EMISSION");
+            beaconMat.SetColor("_EmissionColor", Color.red * 1.5f);
+            beacon.GetComponent<MeshRenderer>().material = beaconMat;
+        }
+
+        public void RebuildAStarTopology()
+        {
+            if (diversionScheduler != null)
+            {
+                diversionScheduler.trackCircuits = trackCircuits;
+                diversionScheduler.switchPoints = switchPoints;
+                diversionScheduler.signals = signals;
+                diversionScheduler.normalTrains = trains;
+                diversionScheduler.rogueEngineers = rogueEngineers;
+                diversionScheduler.RebuildTopology();
+            }
+        }
+
+        public AStarPathResult ComputePathBetweenTracks(
+            string startTrackId, string goalTrackId, Direction dir,
+            HashSet<string> excludeTracks = null)
+        {
+            return diversionScheduler?.ComputePathBetweenTracks(
+                startTrackId, goalTrackId, dir, excludeTracks);
+        }
+
+        public void ClearAllDiversions()
+        {
+            diversionScheduler?.ClearActivePaths();
         }
 
         private void OnDestroy()

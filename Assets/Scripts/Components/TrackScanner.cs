@@ -36,6 +36,7 @@ namespace RailwayInterlock.Components
         private readonly HashSet<TrackCircuit> _newTracks = new HashSet<TrackCircuit>();
         private readonly HashSet<TrackCircuit> _leftTracks = new HashSet<TrackCircuit>();
         private bool _initialized;
+        private bool _useTrainReference;
 
         public Signal ClosestSignal => _closestSignal;
         public float DistanceToClosestSignal => _distanceToClosestSignal;
@@ -51,10 +52,15 @@ namespace RailwayInterlock.Components
         public event Action<Train, TrackCircuit> OnTrackLeft;
         public event Action<Train, Signal> OnRedSignalCrossed;
 
+        public event Action<TrackCircuit> OnGenericTrackEntered;
+        public event Action<TrackCircuit> OnGenericTrackLeft;
+        public event Action<Signal> OnGenericRedCrossed;
+
         private void Awake()
         {
             _train = GetComponent<Train>();
             _rb = GetComponent<Rigidbody>();
+            _useTrainReference = _train != null;
         }
 
         private void Start()
@@ -67,12 +73,16 @@ namespace RailwayInterlock.Components
 
         private void FixedUpdate()
         {
-            if (!_initialized || _train == null) return;
+            if (!_initialized) return;
+            if (_useTrainReference && _train == null) return;
 
             ScanCurrentTrackOccupancy(false);
             ScanSignalsAhead();
             ScanTrainsAhead();
-            CheckSweptPathForRedSignals();
+            if (_useTrainReference)
+            {
+                CheckSweptPathForRedSignals();
+            }
 
             _previousPosition = transform.position;
             _previousRotation = transform.rotation;
@@ -106,6 +116,7 @@ namespace RailwayInterlock.Components
                     _currentTracks.Add(tc);
                     tc.RegisterTrainOccupancy(_train);
                     OnTrackEntered?.Invoke(_train, tc);
+                    OnGenericTrackEntered?.Invoke(tc);
                 }
                 return;
             }
@@ -129,12 +140,14 @@ namespace RailwayInterlock.Components
             {
                 tc.RegisterTrainOccupancy(_train);
                 OnTrackEntered?.Invoke(_train, tc);
+                OnGenericTrackEntered?.Invoke(tc);
             }
 
             foreach (var tc in _leftTracks)
             {
                 tc.UnregisterTrainOccupancy(_train);
                 OnTrackLeft?.Invoke(_train, tc);
+                OnGenericTrackLeft?.Invoke(tc);
             }
 
             _currentTracks.Clear();
@@ -349,11 +362,51 @@ namespace RailwayInterlock.Components
             }
 
             Vector3 center = transform.position + Vector3.up * 1f;
-            float halfLength = _train.trainLength * 0.5f;
+            float halfLength = _train != null ? _train.trainLength * 0.5f : 7f;
             Gizmos.color = new Color(0f, 1f, 1f, 0.15f);
             Gizmos.matrix = Matrix4x4.TRS(center, transform.rotation, Vector3.one);
             Gizmos.DrawCube(Vector3.zero, new Vector3(trackOverlapHalfExtent * 2, trackOverlapHeight, halfLength * 2));
             Gizmos.matrix = Matrix4x4.identity;
+        }
+
+        public (Signal signal, float distance) GetRedSignalAhead()
+        {
+            if (_closestRedSignal != null)
+            {
+                return (_closestRedSignal, _distanceToClosestRedSignal);
+            }
+            return (null, float.MaxValue);
+        }
+
+        public (Train train, float distance)? GetTrainAhead()
+        {
+            if (_closestTrainAhead != null)
+            {
+                return (_closestTrainAhead, _distanceToClosestTrain);
+            }
+            return null;
+        }
+
+        public bool IsApproachingRedSignal(float safetyFactor)
+        {
+            if (_closestRedSignal == null) return false;
+            float stopDist = CalculateMaxDisplacement() * safetyFactor;
+            return _distanceToClosestRedSignal <= stopDist;
+        }
+
+        public bool IsTrainAheadInBrakingDistance(float safetyFactor)
+        {
+            if (_closestTrainAhead == null) return false;
+            float stopDist = CalculateMaxDisplacement() * safetyFactor;
+            return _distanceToClosestTrain <= stopDist;
+        }
+
+        private float CalculateMaxDisplacement()
+        {
+            float speed = _train != null ? _train.Speed : 10f;
+            float maxDecel = _train != null ? _train.emergencyBrakeDeceleration : 6f;
+            float fixedDt = Time.fixedDeltaTime;
+            return speed * fixedDt + 0.5f * maxDecel * fixedDt * fixedDt;
         }
     }
 }

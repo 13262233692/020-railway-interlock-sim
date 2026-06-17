@@ -46,4 +46,41 @@ namespace RailwayInterlock.Core
         Up,
         Down
     }
+
+    public enum GraphNodeType
+    {
+        TrackCircuit,
+        SwitchCommon,
+        SwitchNormal,
+        SwitchReverse,
+        SignalStation
+    }
+
+    public enum GraphEdgeType
+    {
+        Straight,
+        NormalSwitch,
+        ReverseSwitch,
+        Shunting
+    }
+
+    public enum PathStatus
+    {
+        NotComputed,
+        Searching,
+        Found,
+        NoPath,
+        Executing,
+        Aborted,
+        Completed
+    }
+
+    public enum ConflictType
+    {
+        None,
+        HeadOn,
+        RearEnd,
+        Blocked,
+        Overtake
+    }
 }

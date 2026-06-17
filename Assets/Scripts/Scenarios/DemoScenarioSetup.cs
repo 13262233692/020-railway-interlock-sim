@@ -4,6 +4,7 @@ using RailwayInterlock.Core;
 using RailwayInterlock.Data;
 using RailwayInterlock.Components;
 using RailwayInterlock.Management;
+using RailwayInterlock.Pathfinding;
 
 namespace RailwayInterlock.Scenarios
 {
@@ -13,6 +14,7 @@ namespace RailwayInterlock.Scenarios
         private GameManager _gameManager;
 
         public bool autoBuildOnStart = true;
+        public bool spawnRogueEngineer = true;
         public float trackWidth = 3f;
         public float trackSegmentLength = 30f;
         public float spacingBetweenTracks = 10f;
@@ -22,6 +24,7 @@ namespace RailwayInterlock.Scenarios
         private readonly List<SwitchPoint> _createdSwitches = new List<SwitchPoint>();
         private readonly List<Signal> _createdSignals = new List<Signal>();
         private readonly List<Train> _createdTrains = new List<Train>();
+        private readonly List<OutOfControlEngineer> _createdEngineers = new List<OutOfControlEngineer>();
         private readonly List<RouteData> _createdRoutes = new List<RouteData>();
 
         private void Start()
@@ -41,6 +44,10 @@ namespace RailwayInterlock.Scenarios
             BuildSwitches();
             BuildSignals();
             BuildTrains();
+            if (spawnRogueEngineer)
+            {
+                BuildRogueEngineers();
+            }
             BuildRoutes();
             PopulateGameManager();
             _gameManager.StartSimulation();
@@ -100,6 +107,22 @@ namespace RailwayInterlock.Scenarios
 
             Train t2 = CreateTrain("T002", "白驹2号", new Vector3(spacingBetweenTracks, 0, 80), 270, Direction.Down, 60);
             _createdTrains.Add(t2);
+        }
+
+        private void BuildRogueEngineers()
+        {
+            OutOfControlEngineer eng1 = _gameManager.SpawnRogueEngineer(
+                "ENG-001",
+                "失控维修车-01",
+                new Vector3(0, 0, -10),
+                90,
+                Direction.Up,
+                35f);
+            eng1.laneChangeInterval = 8f;
+            eng1.laneChangeProbability = 0.5f;
+            _createdEngineers.Add(eng1);
+
+            Debug.Log("[DemoScenarioSetup] 失控工程维修车已部署到1道T1-2区段");
         }
 
         private void BuildRoutes()
@@ -550,6 +573,7 @@ namespace RailwayInterlock.Scenarios
             _gameManager.signals = new List<Signal>(_createdSignals);
             _gameManager.trains = new List<Train>(_createdTrains);
             _gameManager.routeDefinitions = new List<RouteData>(_createdRoutes);
+            _gameManager.rogueEngineers = new List<OutOfControlEngineer>(_createdEngineers);
         }
 
         private void ClearAll()
@@ -562,14 +586,20 @@ namespace RailwayInterlock.Scenarios
                 if (sig != null) Destroy(sig.gameObject);
             foreach (var train in _createdTrains)
                 if (train != null) Destroy(train.gameObject);
+            foreach (var eng in _createdEngineers)
+                if (eng != null) Destroy(eng.gameObject);
+
+            _gameManager?.ClearAllDiversions();
 
             _createdTracks.Clear();
             _createdSwitches.Clear();
             _createdSignals.Clear();
             _createdTrains.Clear();
+            _createdEngineers.Clear();
             _createdRoutes.Clear();
         }
 
         public List<RouteData> GetAllRoutes() => _createdRoutes;
+        public List<OutOfControlEngineer> GetRogueEngineers() => _createdEngineers;
     }
 }
